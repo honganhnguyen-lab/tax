@@ -12,7 +12,7 @@ export const Route = createFileRoute("/returns/$id/documents")({
   component: Documents,
 });
 
-const kinds: (DocKind | "All")[] = ["All","W-2","1099-NEC","1099-INT","1099-DIV","1098","K-1","Bank Stmt","Receipt","Other"];
+const kinds: (DocKind | "All")[] = ["All","W-2","1099-INT","1099-DIV","Bank Stmt","Receipt","Other"];
 
 function Documents() {
   const { id } = Route.useParams();
