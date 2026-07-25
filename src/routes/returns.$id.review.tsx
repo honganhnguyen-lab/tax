@@ -1,28 +1,18 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
-import {
-  fields,
-  documents,
-  docRegions,
-  fmt$,
-  type ReturnField,
-  type FieldSource,
-} from "@/data/mock";
+import { fields, documents, docRegions, fmt$, type ReturnField } from "@/data/mock";
 import { Card } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { FieldStateChip, fieldContainerClass } from "@/components/FieldChip";
+import { AIInsightPanel, type Correction } from "@/components/AIInsightPanel";
+import { getAIInsight } from "@/lib/ai-insight";
 import {
   Sparkles,
   ShieldCheck,
   ArrowRight,
   Lock,
-  ChevronDown,
-  ChevronRight,
   FileText,
   Calculator,
-  MessageSquare,
-  ExternalLink,
+  AlertTriangle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -53,6 +43,13 @@ function Review() {
   const selected = rFields.find((f) => f.id === selectedId) ?? rFields[0];
   const source = selected?.sources[selectedSourceIdx] ?? selected?.sources[0];
   const doc = documents.find((d) => d.id === source?.docId);
+
+  const [corrections, setCorrections] = useState<Record<string, Correction>>({});
+  const [actioned, setActioned] = useState<Record<string, "approved" | "asked_client">>({});
+  const [evidenceOpen, setEvidenceOpen] = useState<Record<string, boolean>>({});
+
+  const docNameById = (docId: string) => documents.find((d) => d.id === docId)?.name ?? docId;
+  const insight = selected ? getAIInsight(selected, docNameById) : null;
 
   const sections = useMemo(() => {
     const map = new Map<string, ReturnField[]>();
@@ -120,6 +117,9 @@ function Review() {
                                   confidence {Math.round(f.confidence * 100)}%
                                 </span>
                               )}
+                            {f.sources.some((s) =>
+                              s.transform?.toLowerCase().includes("duplicate"),
+                            ) && <AlertTriangle className="h-3 w-3 text-warning" />}
                           </div>
                           <div className="text-sm font-medium mt-0.5">{f.label}</div>
                         </div>
@@ -141,7 +141,7 @@ function Review() {
 
       {/* RIGHT: source viewer */}
       <div className="bg-muted/30 overflow-y-auto">
-        {selected && source && doc ? (
+        {selected && source && doc && insight ? (
           <div className="p-4 sm:p-6 space-y-4">
             <header className="flex items-start justify-between gap-4">
               <div>
@@ -159,94 +159,105 @@ function Review() {
                 <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
                   Value on return
                 </div>
-                <div className="text-xl font-semibold font-mono">{fmt$(selected.value)}</div>
+                <div className="text-xl font-semibold font-mono">
+                  {fmt$(corrections[selected.id]?.value ?? selected.value)}
+                </div>
               </div>
             </header>
 
-            {/* Source picker if multi */}
-            {selected.sources.length > 1 && (
-              <div className="flex flex-wrap gap-1.5">
-                {selected.sources.map((s, i) => {
-                  const d = documents.find((x) => x.id === s.docId);
-                  return (
-                    <button
-                      key={i}
-                      onClick={() => setSelectedSourceIdx(i)}
-                      className={cn(
-                        "text-xs px-2.5 py-1 rounded-md border",
-                        i === selectedSourceIdx
-                          ? "bg-primary text-primary-foreground border-primary"
-                          : "border-border text-muted-foreground hover:text-foreground",
+            <AIInsightPanel
+              key={selected.id}
+              insight={insight}
+              currentValue={corrections[selected.id]?.value ?? selected.value}
+              correction={corrections[selected.id]}
+              actioned={actioned[selected.id]}
+              showEvidence={evidenceOpen[selected.id] ?? false}
+              onToggleEvidence={() =>
+                setEvidenceOpen((prev) => ({ ...prev, [selected.id]: !prev[selected.id] }))
+              }
+              onApprove={() => setActioned((prev) => ({ ...prev, [selected.id]: "approved" }))}
+              onAskClient={() =>
+                setActioned((prev) => ({ ...prev, [selected.id]: "asked_client" }))
+              }
+              onCorrect={(value, reason) =>
+                setCorrections((prev) => ({
+                  ...prev,
+                  [selected.id]: { value, reason, at: new Date().toISOString() },
+                }))
+              }
+              onUndoCorrection={() =>
+                setCorrections((prev) => {
+                  const next = { ...prev };
+                  delete next[selected.id];
+                  return next;
+                })
+              }
+              evidenceSlot={
+                <>
+                  {/* Source picker if multi */}
+                  {selected.sources.length > 1 && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {selected.sources.map((s, i) => {
+                        const d = documents.find((x) => x.id === s.docId);
+                        return (
+                          <button
+                            key={i}
+                            onClick={() => setSelectedSourceIdx(i)}
+                            className={cn(
+                              "text-xs px-2.5 py-1 rounded-md border",
+                              i === selectedSourceIdx
+                                ? "bg-primary text-primary-foreground border-primary"
+                                : "border-border text-muted-foreground hover:text-foreground",
+                            )}
+                          >
+                            {d?.kind} · p.{s.page}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {/* Trace chain */}
+                  <Card className="p-4">
+                    <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-3">
+                      Trace
+                    </div>
+                    <div className="flex items-center gap-2 text-sm flex-wrap">
+                      <Chip icon={<FileText className="h-3 w-3" />}>{doc.name}</Chip>
+                      <ArrowRight className="h-3 w-3 text-muted-foreground" />
+                      <Chip>Page {source.page}</Chip>
+                      <ArrowRight className="h-3 w-3 text-muted-foreground" />
+                      <Chip>{source.box}</Chip>
+                      <ArrowRight className="h-3 w-3 text-muted-foreground" />
+                      <Chip mono>{fmt$(source.extracted)}</Chip>
+                      {source.transform && (
+                        <>
+                          <ArrowRight className="h-3 w-3 text-muted-foreground" />
+                          <Chip icon={<Calculator className="h-3 w-3" />}>{source.transform}</Chip>
+                        </>
                       )}
-                    >
-                      {d?.kind} · p.{s.page}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
+                      <ArrowRight className="h-3 w-3 text-muted-foreground" />
+                      <Chip mono tone="verified">
+                        {fmt$(selected.value)}
+                      </Chip>
+                    </div>
+                  </Card>
 
-            {/* Trace chain */}
-            <Card className="p-4">
-              <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-3">
-                Trace
-              </div>
-              <div className="flex items-center gap-2 text-sm flex-wrap">
-                <Chip icon={<FileText className="h-3 w-3" />}>{doc.name}</Chip>
-                <ArrowRight className="h-3 w-3 text-muted-foreground" />
-                <Chip>Page {source.page}</Chip>
-                <ArrowRight className="h-3 w-3 text-muted-foreground" />
-                <Chip>{source.box}</Chip>
-                <ArrowRight className="h-3 w-3 text-muted-foreground" />
-                <Chip mono>{fmt$(source.extracted)}</Chip>
-                {source.transform && (
-                  <>
-                    <ArrowRight className="h-3 w-3 text-muted-foreground" />
-                    <Chip icon={<Calculator className="h-3 w-3" />}>{source.transform}</Chip>
-                  </>
-                )}
-                <ArrowRight className="h-3 w-3 text-muted-foreground" />
-                <Chip mono tone="verified">
-                  {fmt$(selected.value)}
-                </Chip>
-              </div>
-              {selected.calc && (
-                <div className="mt-3 pt-3 border-t border-border text-xs text-muted-foreground">
-                  <span className="uppercase tracking-wider font-semibold mr-2">Calculation</span>
-                  {selected.calc}
-                </div>
-              )}
-            </Card>
-
-            {/* Faux document viewer with highlighted region */}
-            <DocumentViewer
-              docName={doc.name}
-              kind={doc.name.includes("1098") ? "1098" : doc.kind}
-              page={source.page}
-              pages={doc.pages}
-              region={docRegions.find(
-                (r) => r.docId === source.docId && r.page === source.page && r.box === source.box,
-              )}
-              extractedValue={fmt$(source.extracted)}
+                  {/* Faux document viewer with highlighted region */}
+                  <DocumentViewer
+                    docName={doc.name}
+                    kind={doc.name.includes("1098") ? "1098" : doc.kind}
+                    page={source.page}
+                    pages={doc.pages}
+                    region={docRegions.find(
+                      (r) =>
+                        r.docId === source.docId && r.page === source.page && r.box === source.box,
+                    )}
+                    extractedValue={fmt$(source.extracted)}
+                  />
+                </>
+              }
             />
-
-            <div className="flex flex-wrap gap-2">
-              <Button size="sm">
-                <ShieldCheck className="h-3.5 w-3.5 mr-1.5" />
-                Approve value
-              </Button>
-              <Button variant="secondary" size="sm">
-                Override…
-              </Button>
-              <Button variant="ghost" size="sm">
-                <MessageSquare className="h-3.5 w-3.5 mr-1.5" />
-                Ask client
-              </Button>
-              <Button variant="ghost" size="sm">
-                <ExternalLink className="h-3.5 w-3.5 mr-1.5" />
-                Open document
-              </Button>
-            </div>
           </div>
         ) : (
           <div className="p-8 text-sm text-muted-foreground">
